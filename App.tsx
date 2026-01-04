@@ -1,20 +1,38 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AuthProvider } from './src/contexts/AuthContext';
+import { ProgressProvider } from './src/contexts/ProgressContext';
+import { XPProvider } from './src/contexts/XPContext';
+import { LeagueProvider } from './src/contexts/LeagueContext';
+import { SettingsProvider } from './src/contexts/SettingsContext';
+import { NetworkProvider } from './src/contexts/NetworkContext';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { OfflineBanner } from './src/components/OfflineBanner';
+import { AppNavigator } from './src/navigation/AppNavigator';
 
 export default function App() {
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <NetworkProvider>
+          <AuthProvider>
+            <SettingsProvider>
+              <ProgressProvider>
+                <XPProvider>
+                  <LeagueProvider>
+                    <StatusBar style="light" />
+                    <View style={{ flex: 1 }}>
+                      <OfflineBanner />
+                      <AppNavigator />
+                    </View>
+                  </LeagueProvider>
+                </XPProvider>
+              </ProgressProvider>
+            </SettingsProvider>
+          </AuthProvider>
+        </NetworkProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
