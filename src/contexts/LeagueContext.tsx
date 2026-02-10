@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from './AuthContext';
 import { 
   League, 
   LEAGUES, 
@@ -12,7 +13,8 @@ import {
   getTimeRemainingInWeek,
 } from '../constants/leagues';
 
-const LEAGUE_STORAGE_KEY = '@tewter_league_data';
+const LEAGUE_STORAGE_KEY_PREFIX = '@tewter_league_data_';
+const LEAGUE_GUEST_KEY = '@tewter_league_data_guest';
 
 interface LeagueUser {
   id: string;
@@ -74,14 +76,25 @@ const getLeagueUsers = (currentUserXP: number): LeagueUser[] => {
 };
 
 export function LeagueProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [leagueData, setLeagueData] = useState<LeagueData>(defaultLeagueData);
   const [leagueUsers, setLeagueUsers] = useState<LeagueUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const lastUserIdRef = useRef<string | null | undefined>(undefined);
 
-  // Load league data from storage
+  // Get storage key for current user
+  const getStorageKey = () => {
+    return user ? `${LEAGUE_STORAGE_KEY_PREFIX}${user.id}` : LEAGUE_GUEST_KEY;
+  };
+
+  // Load league data from storage when user changes
   useEffect(() => {
-    loadLeagueData();
-  }, []);
+    const currentUserId = user?.id ?? null;
+    if (lastUserIdRef.current === undefined || currentUserId !== lastUserIdRef.current) {
+      lastUserIdRef.current = currentUserId;
+      loadLeagueData();
+    }
+  }, [user?.id]);
 
   // Update league users when weekly XP changes
   useEffect(() => {
@@ -101,8 +114,12 @@ export function LeagueProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadLeagueData = async () => {
+    setLoading(true);
+    // Reset to default first to clear old user's data
+    setLeagueData(defaultLeagueData);
+    
     try {
-      const stored = await AsyncStorage.getItem(LEAGUE_STORAGE_KEY);
+      const stored = await AsyncStorage.getItem(getStorageKey());
       if (stored) {
         const parsed = JSON.parse(stored) as LeagueData;
         
@@ -128,7 +145,7 @@ export function LeagueProvider({ children }: { children: ReactNode }) {
 
   const saveLeagueData = async (data: LeagueData) => {
     try {
-      await AsyncStorage.setItem(LEAGUE_STORAGE_KEY, JSON.stringify(data));
+      await AsyncStorage.setItem(getStorageKey(), JSON.stringify(data));
     } catch (error) {
       console.error('Failed to save league data:', error);
     }
