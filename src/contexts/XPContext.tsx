@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from './AuthContext';
+import { fetchCloudProgress, syncProgressToCloud, mergeXP, LocalXP } from '../lib/progressSync';
 import {
   XP_REWARDS,
   calculateProblemXP,
@@ -10,7 +12,11 @@ import {
   XPBreakdown,
 } from '../constants/xp';
 
-const XP_STORAGE_KEY = '@tewter_xp_data';
+const XP_STORAGE_KEY_PREFIX = '@tewter_xp_data_';
+const XP_GUEST_KEY = '@tewter_xp_data_guest';
+const PROGRESS_STORAGE_KEY_PREFIX = '@tewter_progress_';
+const PROGRESS_GUEST_KEY = '@tewter_progress_guest';
+const SYNC_DEBOUNCE_MS = 5000;
 
 interface XPData {
   totalXP: number;
@@ -54,6 +60,9 @@ interface XPContextType {
   hasSubtopicMastery: (subtopicId: string) => boolean;
   hasTopicMastery: (topicId: string) => boolean;
   
+  // Reset
+  resetXP: () => Promise<void>;
+  
   // Loading state
   loading: boolean;
 }
@@ -69,21 +78,46 @@ const defaultXPData: XPData = {
 const XPContext = createContext<XPContextType | undefined>(undefined);
 
 export function XPProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [xpData, setXPData] = useState<XPData>(defaultXPData);
   const [loading, setLoading] = useState(true);
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastUserIdRef = useRef<string | null | undefined>(undefined);
 
-  // Load XP data from storage
+  // Get storage keys for current user
+  const getXPStorageKey = () => user ? `${XP_STORAGE_KEY_PREFIX}${user.id}` : XP_GUEST_KEY;
+  const getProgressStorageKey = () => user ? `${PROGRESS_STORAGE_KEY_PREFIX}${user.id}` : PROGRESS_GUEST_KEY;
+
+  // Load XP data on mount and when user changes
   useEffect(() => {
-    loadXPData();
-  }, []);
+    const currentUserId = user?.id ?? null;
+    // Always load on first render (lastUserIdRef starts as undefined sentinel)
+    // Or when user actually changes
+    if (lastUserIdRef.current === undefined || currentUserId !== lastUserIdRef.current) {
+      lastUserIdRef.current = currentUserId;
+      loadXPData();
+    }
+  }, [user?.id]);
+
+  // Sync with cloud when user logs in
+  useEffect(() => {
+    if (user && !loading && xpData.totalXP > 0) {
+      syncWithCloud();
+    }
+  }, [user?.id, loading]);
 
   const loadXPData = async () => {
+    setLoading(true);
+    // Reset to default first to clear old user's data
+    setXPData(defaultXPData);
+    
     try {
-      const stored = await AsyncStorage.getItem(XP_STORAGE_KEY);
+      const stored = await AsyncStorage.getItem(getXPStorageKey());
       if (stored) {
         const parsed = JSON.parse(stored) as XPData;
         setXPData(parsed);
       }
+      // If no stored data, defaultXPData is already set
     } catch (error) {
       console.error('Failed to load XP data:', error);
     } finally {
@@ -91,11 +125,85 @@ export function XPProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const syncWithCloud = async () => {
+    if (!user) return;
+    
+    try {
+      const cloudProgress = await fetchCloudProgress(user.id);
+      
+      if (cloudProgress) {
+        const localXP: LocalXP = {
+          totalXP: xpData.totalXP,
+          level: xpData.level,
+          masteredTopics: xpData.masteredTopics,
+          masteredSubtopics: xpData.masteredSubtopics,
+          firstProblemTopics: xpData.firstProblemTopics,
+        };
+        
+        const merged = mergeXP(localXP, cloudProgress);
+        
+        const newXPData: XPData = {
+          ...xpData,
+          totalXP: merged.totalXP,
+          level: merged.level,
+          masteredTopics: merged.masteredTopics,
+          masteredSubtopics: merged.masteredSubtopics,
+          firstProblemTopics: merged.firstProblemTopics,
+        };
+        
+        setXPData(newXPData);
+        await AsyncStorage.setItem(getXPStorageKey(), JSON.stringify(newXPData));
+      }
+    } catch (error) {
+      console.error('Failed to sync XP with cloud:', error);
+    }
+  };
+
   const saveXPData = async (data: XPData) => {
     try {
-      await AsyncStorage.setItem(XP_STORAGE_KEY, JSON.stringify(data));
+      await AsyncStorage.setItem(getXPStorageKey(), JSON.stringify(data));
+      
+      // Debounced cloud sync when user is logged in
+      if (user) {
+        if (syncTimeoutRef.current) {
+          clearTimeout(syncTimeoutRef.current);
+        }
+        syncTimeoutRef.current = setTimeout(() => {
+          triggerCloudSync(data);
+        }, SYNC_DEBOUNCE_MS);
+      }
     } catch (error) {
       console.error('Failed to save XP data:', error);
+    }
+  };
+
+  const triggerCloudSync = async (xpDataToSync: XPData) => {
+    if (!user) return;
+    
+    try {
+      // Get progress data from storage for full sync
+      const progressStored = await AsyncStorage.getItem(getProgressStorageKey());
+      const progressData = progressStored ? JSON.parse(progressStored) : {
+        totalProblemsCompleted: 0,
+        totalTimeSpentSeconds: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        lastPracticeDate: null,
+        problemsByTopic: {},
+      };
+      
+      await syncProgressToCloud(user.id, progressData, xpDataToSync);
+    } catch (error) {
+      console.error('Failed to sync XP to cloud:', error);
+    }
+  };
+
+  const resetXP = async () => {
+    try {
+      await AsyncStorage.removeItem(getXPStorageKey());
+      setXPData(defaultXPData);
+    } catch (error) {
+      console.error('Failed to reset XP:', error);
     }
   };
 
@@ -273,6 +381,8 @@ export function XPProvider({ children }: { children: ReactNode }) {
     hasFirstProblemBonus,
     hasSubtopicMastery,
     hasTopicMastery,
+    
+    resetXP,
     
     loading,
   };

@@ -31,13 +31,31 @@ const formatTime = (seconds: number): string => {
 
 export function ProfileScreen() {
   const { user, signOut, updateProfile } = useAuth();
-  const { progress, getWeekStats } = useProgress();
-  const { totalXP, level, levelProgress, xpToNextLevel, levelTitle } = useXP();
+  const { progress, getWeekStats, resetProgress } = useProgress();
+  const { totalXP, level, levelProgress, xpToNextLevel, levelTitle, resetXP } = useXP();
   const { settings, updateSetting } = useSettings();
   const navigation = useNavigation<any>();
   const weekStats = getWeekStats();
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [localAvatarUrl, setLocalAvatarUrl] = useState<string | null>(null);
+  const [imageError, setImageError] = useState(false);
+  const [dbAvatarUrl, setDbAvatarUrl] = useState<string | null>(null);
+
+  // Fetch avatar from user_profiles table (same source as website)
+  React.useEffect(() => {
+    if (user) {
+      supabase
+        .from('user_profiles')
+        .select('avatar_url')
+        .eq('id', user.id)
+        .single()
+        .then(({ data }) => {
+          if (data?.avatar_url) {
+            setDbAvatarUrl(data.avatar_url);
+          }
+        });
+    }
+  }, [user]);
 
   const handleSignOut = () => {
     Alert.alert(
@@ -46,6 +64,25 @@ export function ProfileScreen() {
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Sign Out', style: 'destructive', onPress: signOut },
+      ]
+    );
+  };
+
+  const handleResetProgress = () => {
+    Alert.alert(
+      'Reset Progress',
+      'This will clear all your local progress data. Cloud data will not be affected. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Reset', 
+          style: 'destructive', 
+          onPress: async () => {
+            await resetProgress();
+            await resetXP();
+            Alert.alert('Done', 'Progress has been reset.');
+          }
+        },
       ]
     );
   };
@@ -95,7 +132,15 @@ export function ProfileScreen() {
 
       // Set local state immediately for instant feedback
       setLocalAvatarUrl(publicUrl);
+      setDbAvatarUrl(publicUrl);
+      setImageError(false); // Reset error state for new image
+      
+      // Update both user metadata and user_profiles table (for sync with website)
       await updateProfile({ avatarUrl: publicUrl });
+      await supabase
+        .from('user_profiles')
+        .upsert({ id: user.id, avatar_url: publicUrl }, { onConflict: 'id' });
+      
       Alert.alert('Success', 'Profile picture updated!');
     } catch (error) {
       console.error('Upload error:', error);
@@ -106,7 +151,8 @@ export function ProfileScreen() {
   };
 
   const displayName = user?.user_metadata?.display_name || user?.email?.split('@')[0] || 'Guest';
-  const avatarUrl = localAvatarUrl || user?.user_metadata?.avatar_url;
+  // Priority: local upload > database > user metadata
+  const avatarUrl = localAvatarUrl || dbAvatarUrl || user?.user_metadata?.avatar_url;
 
   // If not logged in, show sign in prompt
   if (!user) {
@@ -135,11 +181,11 @@ export function ProfileScreen() {
         {/* Profile Header */}
         <View style={styles.header}>
           <Pressable onPress={pickImage} style={styles.avatarContainer} disabled={uploadingPhoto}>
-            {avatarUrl ? (
+            {avatarUrl && !imageError ? (
               <Image 
                 source={{ uri: avatarUrl }} 
                 style={styles.avatarImage}
-                defaultSource={mascot}
+                onError={() => setImageError(true)}
               />
             ) : (
               <View style={styles.avatar}>
@@ -330,6 +376,14 @@ export function ProfileScreen() {
             <CaretRight size={16} color={colors.textMuted} style={styles.aboutArrow} />
           </Pressable>
         </Card>
+
+        {/* Reset Progress (for debugging/testing) */}
+        {user && (
+          <Pressable style={styles.resetButton} onPress={handleResetProgress}>
+            <Trash size={20} color={colors.warning || '#FFA500'} />
+            <Text style={styles.resetText}>Reset Local Progress</Text>
+          </Pressable>
+        )}
 
         {/* Sign Out */}
         {user && (
@@ -620,13 +674,28 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     color: colors.textMuted,
   },
-  signOutButton: {
+  resetButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
     paddingVertical: spacing.md,
     marginTop: spacing.lg,
+    backgroundColor: '#FFA50015',
+    borderRadius: borderRadius.lg,
+  },
+  resetText: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: '#FFA500',
+  },
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    marginTop: spacing.sm,
     backgroundColor: colors.error + '15',
     borderRadius: borderRadius.lg,
   },

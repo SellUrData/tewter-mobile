@@ -1,8 +1,13 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from './AuthContext';
+import { fetchCloudProgress, syncProgressToCloud, mergeProgress, LocalProgress } from '../lib/progressSync';
 
-const STORAGE_KEY = '@tewter_progress';
+const STORAGE_KEY_PREFIX = '@tewter_progress_';
+const GUEST_STORAGE_KEY = '@tewter_progress_guest';
 const MAX_TIME_PER_PROBLEM_SECONDS = 600; // 10 minute cap per problem
+const SYNC_DEBOUNCE_MS = 5000; // Sync to cloud after 5 seconds of inactivity
 
 interface DailyStats {
   date: string; // YYYY-MM-DD
@@ -23,11 +28,14 @@ interface ProgressData {
 interface ProgressContextType {
   progress: ProgressData;
   loading: boolean;
+  syncing: boolean;
   // Actions
   startProblem: () => void;
   completeProblem: (topicId: string) => void;
   getTodayStats: () => DailyStats | null;
   getWeekStats: () => { problems: number; timeMinutes: number };
+  refreshFromCloud: () => Promise<void>;
+  resetProgress: () => Promise<void>;
 }
 
 const defaultProgress: ProgressData = {
@@ -66,18 +74,63 @@ function isConsecutiveDay(lastDate: string | null, today: string): boolean {
 }
 
 export function ProgressProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [progress, setProgress] = useState<ProgressData>(defaultProgress);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [problemStartTime, setProblemStartTime] = useState<number | null>(null);
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSyncedRef = useRef<string>('');
+  const hasSyncedOnLoginRef = useRef(false);
+  const lastUserIdRef = useRef<string | null | undefined>(undefined);
 
-  // Load progress from storage
+  // Get storage key for current user
+  const getStorageKey = () => {
+    return user ? `${STORAGE_KEY_PREFIX}${user.id}` : GUEST_STORAGE_KEY;
+  };
+
+  // Load progress on mount and when user changes
   useEffect(() => {
-    loadProgress();
-  }, []);
+    const currentUserId = user?.id ?? null;
+    // Always load on first render (lastUserIdRef starts as undefined sentinel)
+    // Or when user actually changes
+    if (lastUserIdRef.current === undefined || currentUserId !== lastUserIdRef.current) {
+      lastUserIdRef.current = currentUserId;
+      hasSyncedOnLoginRef.current = false;
+      loadProgress();
+    }
+  }, [user?.id]);
+
+  // Sync when app comes to foreground
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && user) {
+        syncWithCloud();
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription?.remove();
+  }, [user]);
+
+  // Sync when user logs in
+  useEffect(() => {
+    if (user && !loading && !hasSyncedOnLoginRef.current) {
+      hasSyncedOnLoginRef.current = true;
+      syncWithCloud();
+    }
+    if (!user) {
+      hasSyncedOnLoginRef.current = false;
+    }
+  }, [user?.id, loading]);
 
   const loadProgress = async () => {
+    setLoading(true);
+    // Reset to default first to clear old user's data
+    setProgress(defaultProgress);
+    
     try {
-      const stored = await AsyncStorage.getItem(STORAGE_KEY);
+      const stored = await AsyncStorage.getItem(getStorageKey());
       if (stored) {
         const parsed = JSON.parse(stored) as ProgressData;
         
@@ -92,6 +145,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
         
         setProgress(parsed);
       }
+      // If no stored data, defaultProgress is already set
     } catch (error) {
       console.error('Failed to load progress:', error);
     } finally {
@@ -99,14 +153,113 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const syncWithCloud = async () => {
+    if (!user) return;
+    
+    setSyncing(true);
+    try {
+      const cloudProgress = await fetchCloudProgress(user.id);
+      
+      // Get current local progress
+      const stored = await AsyncStorage.getItem(getStorageKey());
+      const localProgress = stored ? JSON.parse(stored) as ProgressData : defaultProgress;
+      
+      if (cloudProgress) {
+        // Merge cloud and local data
+        const localData: LocalProgress = {
+          totalProblemsCompleted: localProgress.totalProblemsCompleted,
+          totalTimeSpentSeconds: localProgress.totalTimeSpentSeconds,
+          currentStreak: localProgress.currentStreak,
+          longestStreak: localProgress.longestStreak,
+          lastPracticeDate: localProgress.lastPracticeDate,
+          problemsByTopic: localProgress.problemsByTopic,
+        };
+        
+        const merged = mergeProgress(localData, cloudProgress);
+        
+        // Update local state with merged data
+        const newProgress: ProgressData = {
+          ...localProgress,
+          totalProblemsCompleted: merged.totalProblemsCompleted,
+          totalTimeSpentSeconds: merged.totalTimeSpentSeconds,
+          currentStreak: merged.currentStreak,
+          longestStreak: merged.longestStreak,
+          lastPracticeDate: merged.lastPracticeDate,
+          problemsByTopic: merged.problemsByTopic,
+        };
+        
+        setProgress(newProgress);
+        await AsyncStorage.setItem(getStorageKey(), JSON.stringify(newProgress));
+        
+        // Also push local data to cloud to ensure both are in sync
+        await triggerCloudSync(newProgress);
+      } else {
+        // No cloud data - push local to cloud
+        if (localProgress.totalProblemsCompleted > 0) {
+          await triggerCloudSync(localProgress);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to sync with cloud:', error);
+    } finally {
+      setSyncing(false);
+    }
+  };
+  
+  const refreshFromCloud = async () => {
+    await syncWithCloud();
+  };
+
+  const resetProgress = async () => {
+    // Clear local storage and reset to default
+    try {
+      await AsyncStorage.removeItem(getStorageKey());
+      setProgress(defaultProgress);
+    } catch (error) {
+      console.error('Failed to reset progress:', error);
+    }
+  };
+
   const saveProgress = async (newProgress: ProgressData) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newProgress));
+      await AsyncStorage.setItem(getStorageKey(), JSON.stringify(newProgress));
+      
+      // Debounced cloud sync when user is logged in
+      if (user) {
+        if (syncTimeoutRef.current) {
+          clearTimeout(syncTimeoutRef.current);
+        }
+        syncTimeoutRef.current = setTimeout(() => {
+          triggerCloudSync(newProgress);
+        }, SYNC_DEBOUNCE_MS);
+      }
     } catch (error) {
       console.error('Failed to save progress:', error);
     }
   };
 
+  const triggerCloudSync = async (progressData: ProgressData) => {
+    if (!user) return;
+    
+    // Get XP data from storage for full sync
+    try {
+      const xpStored = await AsyncStorage.getItem('@tewter_xp_data');
+      const xpData = xpStored ? JSON.parse(xpStored) : { totalXP: 0, level: 1, masteredTopics: [], masteredSubtopics: [], firstProblemTopics: [] };
+      
+      await syncProgressToCloud(user.id, {
+        totalProblemsCompleted: progressData.totalProblemsCompleted,
+        totalTimeSpentSeconds: progressData.totalTimeSpentSeconds,
+        currentStreak: progressData.currentStreak,
+        longestStreak: progressData.longestStreak,
+        lastPracticeDate: progressData.lastPracticeDate,
+        problemsByTopic: progressData.problemsByTopic,
+      }, xpData);
+    } catch (error) {
+      console.error('Failed to sync to cloud:', error);
+    }
+  };
+
+  
   const startProblem = useCallback(() => {
     setProblemStartTime(Date.now());
   }, []);
@@ -206,11 +359,14 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   return (
     <ProgressContext.Provider value={{ 
       progress, 
-      loading, 
+      loading,
+      syncing,
       startProblem, 
       completeProblem,
       getTodayStats,
       getWeekStats,
+      refreshFromCloud,
+      resetProgress,
     }}>
       {children}
     </ProgressContext.Provider>
