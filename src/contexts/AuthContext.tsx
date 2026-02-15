@@ -10,6 +10,7 @@ interface AuthContextType {
   signUp: (email: string, password: string, displayName: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   updateProfile: (data: { displayName?: string; avatarUrl?: string }) => Promise<{ error: Error | null }>;
+  deleteAccount: () => Promise<{ error: Error | null }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -83,8 +84,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error };
   };
 
+  const deleteAccount = async () => {
+    if (!user) return { error: new Error('No user logged in') };
+    
+    try {
+      // Delete user data from all tables
+      await supabase.from('user_progress').delete().eq('user_id', user.id);
+      await supabase.from('user_profiles').delete().eq('id', user.id);
+      
+      // Delete avatar from storage if exists
+      const { data: avatarFiles } = await supabase.storage
+        .from('avatars')
+        .list(user.id);
+      
+      if (avatarFiles && avatarFiles.length > 0) {
+        const filesToDelete = avatarFiles.map(f => `${user.id}/${f.name}`);
+        await supabase.storage.from('avatars').remove(filesToDelete);
+      }
+      
+      // Call server endpoint to delete auth user (requires service role)
+      const API_BASE = process.env.EXPO_PUBLIC_API_URL || 'https://tewter.vercel.app';
+      const response = await fetch(`${API_BASE}/api/delete-account`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+        },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete account');
+      }
+      
+      // Sign out after deletion
+      await signOut();
+      
+      return { error: null };
+    } catch (error) {
+      console.error('Delete account error:', error);
+      return { error: error as Error };
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, session, loading, signIn, signUp, signOut, updateProfile }}>
+    <AuthContext.Provider value={{ user, session, loading, signIn, signUp, signOut, updateProfile, deleteAccount }}>
       {children}
     </AuthContext.Provider>
   );

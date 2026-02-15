@@ -30,7 +30,8 @@ const formatTime = (seconds: number): string => {
 };
 
 export function ProfileScreen() {
-  const { user, signOut, updateProfile } = useAuth();
+  const { user, signOut, updateProfile, deleteAccount } = useAuth();
+  const [deleting, setDeleting] = useState(false);
   const { progress, getWeekStats, resetProgress } = useProgress();
   const { totalXP, level, levelProgress, xpToNextLevel, levelTitle, resetXP } = useXP();
   const { settings, updateSetting } = useSettings();
@@ -81,6 +82,44 @@ export function ProfileScreen() {
             await resetProgress();
             await resetXP();
             Alert.alert('Done', 'Progress has been reset.');
+          }
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account and all associated data. This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete Account', 
+          style: 'destructive', 
+          onPress: () => {
+            // Second confirmation
+            Alert.alert(
+              'Are you absolutely sure?',
+              'All your progress, XP, and profile data will be permanently deleted.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Yes, Delete My Account', 
+                  style: 'destructive', 
+                  onPress: async () => {
+                    setDeleting(true);
+                    const { error } = await deleteAccount();
+                    setDeleting(false);
+                    if (error) {
+                      Alert.alert('Error', error.message || 'Failed to delete account. Please try again.');
+                    } else {
+                      Alert.alert('Account Deleted', 'Your account has been successfully deleted.');
+                    }
+                  }
+                },
+              ]
+            );
           }
         },
       ]
@@ -390,6 +429,24 @@ export function ProfileScreen() {
           <Pressable style={styles.signOutButton} onPress={handleSignOut}>
             <SignOut size={20} color={colors.error} />
             <Text style={styles.signOutText}>Sign Out</Text>
+          </Pressable>
+        )}
+
+        {/* Delete Account */}
+        {user && (
+          <Pressable 
+            style={styles.deleteAccountButton} 
+            onPress={handleDeleteAccount}
+            disabled={deleting}
+          >
+            {deleting ? (
+              <ActivityIndicator size="small" color={colors.error} />
+            ) : (
+              <>
+                <Trash size={20} color={colors.error} />
+                <Text style={styles.deleteAccountText}>Delete Account</Text>
+              </>
+            )}
           </Pressable>
         )}
       </ScrollView>
@@ -702,6 +759,24 @@ const styles = StyleSheet.create({
   signOutText: {
     fontSize: fontSize.md,
     fontWeight: '600',
+    color: colors.error,
+  },
+  deleteAccountButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    marginTop: spacing.xl,
+    marginBottom: spacing.lg,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: colors.error + '50',
+    borderRadius: borderRadius.lg,
+  },
+  deleteAccountText: {
+    fontSize: fontSize.sm,
+    fontWeight: '500',
     color: colors.error,
   },
 });
