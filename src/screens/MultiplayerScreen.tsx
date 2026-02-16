@@ -5,8 +5,10 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
+import { OfflineNotice } from '../components/ui/OfflineNotice';
 import { colors, spacing, fontSize, borderRadius } from '../constants/theme';
 import { useAuth } from '../contexts/AuthContext';
+import { useNetwork } from '../contexts/NetworkContext';
 
 type MultiplayerScreenProps = {
   navigation: NativeStackNavigationProp<any>;
@@ -14,6 +16,8 @@ type MultiplayerScreenProps = {
 
 export function MultiplayerScreen({ navigation }: MultiplayerScreenProps) {
   const { user } = useAuth();
+  const { isOffline } = useNetwork();
+  
   const [roomCode, setRoomCode] = useState('');
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -42,7 +46,7 @@ export function MultiplayerScreen({ navigation }: MultiplayerScreenProps) {
         `Share this code with friends:\n\n${newRoomCode}`,
         [
           { text: 'Copy Code', onPress: () => {} },
-          { text: 'Start Game', onPress: () => navigation.navigate('MultiplayerGame', { roomCode: newRoomCode, gameType }) },
+          { text: 'Go to Room', onPress: () => navigation.navigate('MultiplayerGame', { roomCode: newRoomCode, gameType }) },
         ]
       );
     } catch (error) {
@@ -73,6 +77,14 @@ export function MultiplayerScreen({ navigation }: MultiplayerScreenProps) {
       setJoining(false);
     }
   };
+
+  if (isOffline) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <OfflineNotice feature="Multiplayer" />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

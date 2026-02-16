@@ -14,6 +14,7 @@ import { ArithmeticScreen } from '../screens/ArithmeticScreen';
 import { UploadScreen } from '../screens/UploadScreen';
 import { LeaderboardScreen } from '../screens/LeaderboardScreen';
 import { MultiplayerScreen } from '../screens/MultiplayerScreen';
+import { MultiplayerGameScreen } from '../screens/MultiplayerGameScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { AuthScreen } from '../screens/AuthScreen';
 import { useAuth } from '../contexts/AuthContext';
@@ -161,9 +162,9 @@ function MainTabs() {
           backgroundColor: colors.card,
           borderTopColor: colors.cardBorder,
           borderTopWidth: 1,
-          paddingTop: 10,
-          paddingBottom: 10,
-          height: 75,
+          paddingTop: 8,
+          paddingBottom: 28,
+          height: 85,
           // Add subtle shadow for depth
           shadowColor: '#000',
           shadowOffset: { width: 0, height: -4 },
@@ -279,6 +280,15 @@ export function AppNavigator() {
             title: 'Multiplayer', 
             headerShown: true,
             animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen 
+          name="MultiplayerGame" 
+          component={MultiplayerGameScreen} 
+          options={{ 
+            title: 'Game', 
+            headerShown: true,
+            animation: 'slide_from_right',
           }}
         />
         
